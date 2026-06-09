@@ -1,222 +1,151 @@
-# Отчет по лабораторной работе №7
+# Лабораторная работа №8: Docker
 
-**Студент:** Tagir-iu  
-**Тема:** Система управления зависимостями Hunter (попытка внедрения)
 
----
+## Цель работы
 
-## 1. Цель работы
-
-Изучить систему управления зависимостями **Hunter** для C++ проектов, научиться подключать сторонние библиотеки (GTest) и создавать собственные пакеты.
+Изучение основ Docker: создание Dockerfile, сборка образов, запуск контейнеров, монтирование томов, автоматизация сборки с GitHub Actions.
 
 ---
 
-## 2. Задание
+## Ход выполнения работы
 
-1. Настроить интеграцию Hunter в CMake проект
-2. Подключить библиотеку GTest через Hunter
-3. Написать модульные тесты для классов `Account` и `Transaction`
-4. Настроить CI через GitHub Actions
-5. Создать пакеты (DEB, RPM, TGZ, ZIP) при помечении коммита тэгом
+### 1. Создание репозитория на GitHub
 
----
+```shell
+# Создаём публичный репозиторий lab08
+gh repo create lab08 --public --clone
 
-## 3. Выполнение работы
-
-### 3.1. Структура проекта
+# Переходим в директорию репозитория
+cd lab08
 ```
-lab07/
-├── banking/
-│ ├── Account.h
-│ ├── Account.cpp
-│ ├── Transaction.h
-│ ├── Transaction.cpp
-│ └── CMakeLists.txt
-├── tests/
-│ ├── test_account.cpp
-│ └── test_transaction.cpp
-├── .github/workflows/
-│ └── linux.yml
-├── CMakeLists.txt
-├── CPackConfig.cmake
-├── DESCRIPTION
-├── LICENSE
-├── ChangeLog.md
-└── README.md
+Результат: Репозиторий https://github.com/Tagir-iu/lab08 успешно создан.
+
+### 2. Создание программы demo.cpp
+Программа читает строки из стандартного ввода и сохраняет их в файл лога.
 ```
+cat > demo.cpp << 'EOF'
+#include <iostream>
+#include <fstream>
+#include <cstdlib>
 
-
-### 3.2. Попытка интеграции Hunter
-
-Была предпринята попытка настроить Hunter в `CMakeLists.txt`:
-
-```cmake
-cmake_minimum_required(VERSION 3.4)
-
-include("cmake/HunterGate.cmake")
-HunterGate(
-    URL "https://github.com/cpp-pm/hunter/archive/v0.23.13.tar.gz"
-    SHA1 "ef7d6ac5a4ba88307b2bea3e6ed7206c69f542e8"
-)
-
-project(lab07)
-```
-### 3.3. Возникшие проблемы
-
-При попытке использования Hunter возникли следующие ошибки:
-```
-    Ошибка скачивания GTest — Hunter не мог скачать GTest из-за проблем с SHA1
-    Ошибка компиляции GTest — сборка GTest падала с -Werror (предупреждения трактовались как ошибки)
-    Ошибка hunter_error_page — внутренняя ошибка Hunter при скачивании пакетов
-```
-### 3.4 Альтернативное решение 
-В связи с невозможностью использовать Hunter (проблемы с сетью и совместимостью), было принято решение использовать классический GTest через add_subdirectory:
-```
-if(BUILD_TESTS)
-    enable_testing()
+int main() {
+    const char* log_path = std::getenv("LOG_PATH");
+    std::ofstream log(log_path ? log_path : "/home/logs/log.txt");
+    std::string line;
     
-    add_subdirectory(third-party/gtest)
+    std::cout << "Enter text (Ctrl+D to finish):" << std::endl;
+    while (std::getline(std::cin, line)) {
+        std::cout << "You entered: " << line << std::endl;
+        if (log.is_open()) {
+            log << line << std::endl;
+        }
+    }
     
-    add_executable(check tests/test_account.cpp tests/test_transaction.cpp)
-    target_link_libraries(check banking gtest_main)
-    target_include_directories(check PRIVATE banking)
-    
-    add_test(NAME check COMMAND check)
-endif()
+    std::cout << "Log saved" << std::endl;
+    return 0;
+}
+EOF
+```
+### 3.Создание CMakeLists.txt
+```
+cat > CMakeLists.txt << 'EOF'
+cmake_minimum_required(VERSION 3.10)
+project(demo)
+
+set(CMAKE_CXX_STANDARD 11)
+add_executable(demo demo.cpp)
+
+install(TARGETS demo DESTINATION bin)
+EOF
+```
+### 4.Создание Dockerfile
+```
+cat > Dockerfile << 'EOF'
+FROM ubuntu:18.04
+
+# Обновление и установка необходимых пакетов
+RUN apt update
+RUN apt install -yy gcc g++ cmake
+
+# Копирование исходного кода в контейнер
+COPY . /print
+WORKDIR /print
+
+# Сборка проекта с помощью CMake
+RUN cmake -H. -B_build -DCMAKE_BUILD_TYPE=Release -DCMAKE_INSTALL_PREFIX=_install
+RUN cmake --build _build
+RUN cmake --build _build --target install
+
+# Настройка переменной окружения для пути к логам
+ENV LOG_PATH /home/logs/log.txt
+
+# Создание тома для хранения логов
+VOLUME /home/logs
+
+# Установка рабочей директории и точки входа
+WORKDIR /print/_install/bin
+ENTRYPOINT ./demo
+EOF
 ```
 
-### 3.5 Класс Account
+# 5. Сборка Docker-a
 ```
-class Account {
-private:
-    std::string id;
-    double balance;
-public:
-    Account(const std::string& id, double initialBalance = 0.0);
-    void deposit(double amount);
-    bool withdraw(double amount);
-    double getBalance() const;
-    std::string getId() const;
-};
+docker build -t logger .
 ```
 
-
-### 3.6 Класс Transaction
+# 6. Запуск контейнера
 ```
-class Transaction {
-private:
-    std::string fromId;
-    std::string toId;
-    double amount;
-    bool completed;
-public:
-    Transaction(const std::string& from, const std::string& to, double amount);
-    bool execute(Account& from, Account& to);
-    bool isCompleted() const;
-    double getAmount() const;
-};
+# Создание директории для логов на хост-системе
+mkdir -p logs
+
+# Запуск контейнера с монтированием тома
+docker run -it -v "$(pwd)/logs/:/home/logs/" logger
 ```
 
-### 3.7 Добавляем GTest как git submodule:
+# 7.Настройка Github Actions 
+Создаем workflow для автоматической сборки Docker-образа при каждом  push
 ```
-git submodule add https://github.com/google/googletest third-party/gtest
-cd third-party/gtest && git checkout release-1.12.1
-```
+mkdir -p .github/workflows
 
-### 3.8 Проверка и анализ на модульных тестах
-введем классификацию тестов
-
-```
-name: Linux CI (gcc & clang)
+cat > .github/workflows/docker.yml << 'EOF'
+name: Docker Build
 
 on:
   push:
     branches: [ main, master ]
-    tags: [ 'v*' ]
-  pull_request:
-    branches: [ main, master ]
 
 jobs:
   build:
-    runs-on: ubuntu-22.04
-    strategy:
-      matrix:
-        compiler: [gcc, clang]
-    env:
-      CC: ${{ matrix.compiler == 'gcc' && 'gcc' || 'clang' }}
-      CXX: ${{ matrix.compiler == 'gcc' && 'g++' || 'clang++' }}
+    runs-on: ubuntu-latest
 
     steps:
-      - uses: actions/checkout@v4
-        with:
-          submodules: recursive
-          fetch-depth: 0
+    - name: Checkout code
+      uses: actions/checkout@v4
 
-      - name: Initialize Submodules
-        run: git submodule update --init --recursive
+    - name: Build Docker image
+      run: docker build -t logger .
 
-      - name: Install GTest (Logs for demo)
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y googletest libgtest-dev
-
-      - name: Install dependencies
-        run: |
-          sudo apt-get install -y cmake build-essential rpm
-
-      - name: Configure
-        run: cmake -H. -B_build -DBUILD_TESTS=ON
-
-      - name: Build
-        run: cmake --build _build
-
-      - name: Test
-        run: ctest --test-dir _build --output-on-failure
-
-      - name: Create packages
-        if: startsWith(github.ref, 'refs/tags/')
-        run: |
-          cd _build
-          cpack -G DEB
-          cpack -G RPM
-          cpack -G TGZ
-          cpack -G ZIP
-
-      - name: Upload Release
-        if: startsWith(github.ref, 'refs/tags/')
-        uses: softprops/action-gh-release@v1
-        with:
-          files: _build/*.deb _build/*.rpm _build/*.tar.gz _build/*.zip
+    - name: Run container
+      run: |
+        mkdir -p logs
+        echo -e "test1\ntest2\ntest3" | docker run -i -v "$(pwd)/logs:/home/logs/" logger
+        cat logs/log.txt
+EOF
 ```
-
-### 4.0 Проверка результатов
-вывод:
+# 9. Отправка на Github
 ```
-[==========] Running 7 tests from 2 test suites.
-[----------] 3 tests from AccountTest
-[ RUN      ] AccountTest.ConstructorInitializesBalance
-[       OK ] AccountTest.ConstructorInitializesBalance
-[ RUN      ] AccountTest.DepositIncreasesBalance
-[       OK ] AccountTest.DepositIncreasesBalance
-[ RUN      ] AccountTest.WithdrawDecreasesBalance
-[       OK ] AccountTest.WithdrawDecreasesBalance
-[----------] 3 tests from AccountTest
+# Добавление всех файлов
+git add .
 
-[----------] 4 tests from TransactionTest
-[ RUN      ] TransactionTest.ExecuteTransfersMoney
-[       OK ] TransactionTest.ExecuteTransfersMoney
-[ RUN      ] TransactionTest.ExecuteFailsIfInsufficientFunds
-[       OK ] TransactionTest.ExecuteFailsIfInsufficientFunds
-[ RUN      ] TransactionTest.ExecuteFailsIfAlreadyCompleted
-[       OK ] TransactionTest.ExecuteFailsIfAlreadyCompleted
-[ RUN      ] TransactionTest.ExecuteFailsWithWrongAccounts
-[       OK ] TransactionTest.ExecuteFailsWithWrongAccounts
-[----------] 4 tests from TransactionTest
+# Проверка статуса
+git status
 
-[==========] 7 tests from 2 test suites ran.
-[  PASSED  ] 7 tests.
+# Создание коммита
+git commit -m "Lab08: Docker with GitHub Actions"
+
+# Переименование ветки (если нужно)
+git branch -M main
+
+# Отправка на GitHub
+git push -u origin main
 ```
-
-## Вывод
-К сожалению в силу некоторых особенностей системы мне не удалось прилинковать
-Hunter к моей сборке, от чего использовал стандарную связку GTest через submodule
